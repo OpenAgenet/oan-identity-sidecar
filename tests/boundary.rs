@@ -46,6 +46,8 @@ impl RuntimeVerifier for WrongAudience {
             audience_did: "wrong".into(),
             request_id: "req".into(),
             payload_digest: "sha256:body".into(),
+            caller_id: None,
+            tenant_id: None,
         })
     }
 }
@@ -95,6 +97,8 @@ impl RuntimeVerifier for VerifiedMock {
             audience_did: audience.into(),
             request_id: request_id.into(),
             payload_digest: digest.into(),
+            caller_id: Some("process-a".into()),
+            tenant_id: Some("tenant-a".into()),
         })
     }
 }
@@ -114,4 +118,102 @@ async fn authenticated_runtime_result_creates_principal() {
         "did:oan:K7mQ9:11111111111111111111111111111111"
     );
     assert_eq!(principal.request_id(), "req");
+}
+
+struct IpcEcho {
+    response: Vec<u8>,
+}
+impl RuntimeIpcTransport for IpcEcho {
+    async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        let response = self.response.clone();
+        Ok(response)
+    }
+}
+
+#[tokio::test]
+async fn authenticated_ipc_binds_version_caller_tenant_and_input() {
+    let envelope = json!({"signed":"message"});
+    let input_digest = oan_identity_sidecar::runtime_connector::input_digest(
+        &envelope,
+        "did:oan:target",
+        "request",
+        "sha256:body",
+    );
+    let response = serde_json::to_vec(&json!({
+        "version": IPC_VERSION,
+        "callerId": "process-a",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":"did:oan:caller","audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest": input_digest
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    let context = connector
+        .verify_authenticated(&envelope, "did:oan:target", "request", "sha256:body")
+        .await
+        .unwrap();
+    assert_eq!(context.subject_did, "did:oan:caller");
+}
+
+#[tokio::test]
+async fn authenticated_ipc_context_becomes_read_only_verified_principal() {
+    let envelope = json!({"signed":"message"});
+    let input_digest = oan_identity_sidecar::runtime_connector::input_digest(
+        &envelope,
+        "did:oan:target",
+        "request",
+        "sha256:body",
+    );
+    let response = serde_json::to_vec(&json!({
+        "version": IPC_VERSION,
+        "callerId": "process-a",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":"did:oan:K7mQ9:11111111111111111111111111111111","audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest": input_digest
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    let principal = verify_inbound(
+        &connector,
+        &envelope,
+        "did:oan:target",
+        "request",
+        "sha256:body",
+    )
+    .await
+    .unwrap();
+    assert_eq!(principal.caller_id(), Some("process-a"));
+    assert_eq!(principal.tenant_id(), Some("tenant-a"));
+}
+
+#[tokio::test]
+async fn authenticated_ipc_rejects_forged_caller_or_result_binding() {
+    let response = serde_json::to_vec(&json!({
+        "version": IPC_VERSION,
+        "callerId": "attacker",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":"did:oan:caller","audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest": "wrong"
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    assert!(connector
+        .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
+        .await
+        .is_err());
 }

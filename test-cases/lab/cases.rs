@@ -93,6 +93,8 @@ impl RuntimeVerifier for ContextDouble {
             } else {
                 digest.into()
             },
+            caller_id: Some("lab-process".into()),
+            tenant_id: Some("lab-tenant".into()),
         })
     }
 }
