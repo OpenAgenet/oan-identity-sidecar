@@ -123,6 +123,13 @@ async fn authenticated_runtime_result_creates_principal() {
 struct IpcEcho {
     response: Vec<u8>,
 }
+
+struct IpcError;
+impl RuntimeIpcTransport for IpcError {
+    async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        Err("transport_unavailable".into())
+    }
+}
 impl RuntimeIpcTransport for IpcEcho {
     async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {
         let response = self.response.clone();
@@ -216,4 +223,89 @@ async fn authenticated_ipc_rejects_forged_caller_or_result_binding() {
         .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn authenticated_ipc_rejects_invalid_bearer_and_transport_failure() {
+    assert!(AuthenticatedRuntimeConnector::new(
+        IpcError,
+        "too-short".into(),
+        "process-a".into(),
+        None,
+    )
+    .is_err());
+    let connector =
+        AuthenticatedRuntimeConnector::new(IpcError, "b".repeat(32), "process-a".into(), None)
+            .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
+            .await
+            .unwrap_err(),
+        "transport_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_ipc_rejects_unknown_fields_wrong_version_and_oversized_frames() {
+    let unknown = serde_json::to_vec(&json!({
+        "version": IPC_VERSION,
+        "callerId": "process-a",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":"did:oan:caller","audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest": "wrong",
+        "extra": true
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response: unknown },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
+            .await
+            .unwrap_err(),
+        "ipc_schema_invalid"
+    );
+
+    let wrong_version = serde_json::to_vec(&json!({
+        "version": "oan-runtime-ipc-v0",
+        "callerId": "process-a",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":"did:oan:caller","audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest": "wrong"
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho {
+            response: wrong_version,
+        },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
+            .await
+            .unwrap_err(),
+        "ipc_result_binding_mismatch"
+    );
+
+    let oversized = IpcEcho {
+        response: vec![b' '; 256 * 1024 + 1],
+    };
+    let connector =
+        AuthenticatedRuntimeConnector::new(oversized, "b".repeat(32), "process-a".into(), None)
+            .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated(&json!({}), "did:oan:target", "request", "sha256:body")
+            .await
+            .unwrap_err(),
+        "ipc_frame_too_large"
+    );
 }
