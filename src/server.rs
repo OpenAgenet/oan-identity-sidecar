@@ -253,26 +253,19 @@ async fn handle(
         .header("x-oan-sidecar-token", backend_token)
         .header("x-oan-verified-principal", principal.subject_did())
         .header("x-oan-request-id", principal.request_id());
-    // Once the request has been verified, split the ingress socket. The read
-    // half remains dedicated to detecting client disconnects while the write
-    // half carries the backend response. Dropping the reqwest future/stream on
-    // disconnect cancels an in-flight protocol operation instead of letting a
-    // detached backend task continue.
+    // Once the request has been verified, split the ingress socket. Do not
+    // treat an EOF on the read half before the backend responds as a client
+    // disconnect: HTTP clients such as urllib may half-close their upload
+    // side immediately after sending a complete request. The backend request
+    // must therefore be allowed to finish first; the read half is used for
+    // disconnect detection while streaming the response below.
     let (mut client_reader, mut client_writer) = socket.split();
-    let send = req.send();
-    tokio::pin!(send);
-    let response = tokio::select! {
-        result = &mut send => match result {
-            Ok(response) => response,
-            Err(error) => {
-                eprintln!("backend request failed: {error}");
-                let _ = write_error(&mut client_writer, 502, "backend_unavailable").await;
-                return Ok(());
-            }
-        },
-        closed = wait_for_client_close(&mut client_reader) => {
-            let _ = closed;
-            return Err("response_already_started".into());
+    let response = match req.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("backend request failed: {error}");
+            let _ = write_error(&mut client_writer, 502, "backend_unavailable").await;
+            return Ok(());
         }
     };
     let status = response.status();
@@ -370,9 +363,14 @@ async fn handle(
 async fn wait_for_client_close(reader: &mut tokio::net::tcp::ReadHalf<'_>) -> Result<(), String> {
     let mut probe = [0u8; 1];
     match reader.read(&mut probe).await {
-        Ok(0) => Ok(()),
+        // A client may half-close its upload direction after sending a
+        // complete request (urllib and several streaming clients do this).
+        // EOF on the read half therefore does not prove that the peer has
+        // abandoned the response. Keep the observer pending and let a write
+        // failure detect a real disconnect.
+        Ok(0) => std::future::pending().await,
         Ok(_) => Err("client_protocol_data_after_request".into()),
-        Err(_) => Ok(()),
+        Err(_) => std::future::pending().await,
     }
 }
 
