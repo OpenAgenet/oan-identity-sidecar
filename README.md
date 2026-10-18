@@ -12,14 +12,19 @@ A local OAN identity boundary component deployed beside existing agents or servi
 
 ## Scope
 
-The first Sidecar release supports:
+The current G5 implementation supports:
 
 - submitting structured signing intents for outbound requests, with identity selection and signing performed by the Runtime;
 - verifying inbound OAN envelopes, audience, time windows, nonces, digests, and signatures;
 - verifying responses, streaming events, and tool results;
 - injecting a read-only `VerifiedPrincipal` into the backend;
 - removing or rejecting client-supplied forged identity headers;
-- providing a thin boundary for MCP Streamable HTTP, ordinary HTTP, and later A2A deployments.
+- a loopback protected HTTP ingress for MCP, ordinary HTTP and A2A-compatible request bodies;
+- versioned Unix-socket Runtime IPC with bearer, caller, tenant, request digest and callback binding;
+- owner-only Unix-socket ACL and optional expected owner UID checks before every IPC connection;
+- Runtime-mediated outbound signing, with method/target/body/request binding and redirect disabled;
+- bounded chunked response forwarding with client-disconnect detection and backend timeout;
+- backend credential injection so direct fixture access fails closed.
 
 stdio proves only a local process boundary. Without a remote challenge and message signatures, the Sidecar must not report successful remote mutual identity verification.
 
@@ -46,7 +51,7 @@ Agent / MCP Server / HTTP Service
 
 ## Development status
 
-A buildable development framework is now present. This is not yet a production identity service or a complete mutual-authentication implementation. Detailed design, development planning, and framework reviews are maintained separately in `oan-design-docs`. Source code uses English by default.
+A buildable G5 boundary implementation is present. The lab supplies Ubuntu-only cross-process A2A/MCP adapters that exercise protected ingress, Runtime IPC, callback binding, response streaming, cancellation and direct-backend rejection. Full Linux peer-credential verification beyond socket owner/mode checks, pinned Hermes outbound execution and complete multi-hop Gateway paths remain separate acceptance work. Detailed design, development planning, and framework reviews are maintained separately in `oan-design-docs`. Source code uses English by default.
 
 ## License
 

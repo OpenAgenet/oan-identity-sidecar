@@ -5,7 +5,9 @@
 
 pub mod config;
 pub mod headers;
+pub mod outbound;
 pub mod runtime_connector;
+pub mod server;
 
 use runtime_connector::RuntimeVerifier;
 use serde_json::{json, Value};
@@ -19,6 +21,8 @@ pub enum BoundaryError {
     VerificationFailed,
     #[error("verified_context_binding_mismatch")]
     BindingMismatch,
+    #[error("network_server_not_configured")]
+    NetworkServerNotConfigured,
 }
 
 /// Constructible only through the verified boundary, never directly from headers.
@@ -30,6 +34,28 @@ pub struct VerifiedPrincipal {
     tenant_id: Option<String>,
 }
 impl VerifiedPrincipal {
+    pub(crate) fn from_context(
+        context: runtime_connector::VerifiedRuntimeContext,
+        audience: &str,
+        request_id: &str,
+        payload_digest: &str,
+        caller_id: String,
+        tenant_id: Option<String>,
+    ) -> Result<Self, BoundaryError> {
+        if context.audience_did != audience
+            || context.request_id != request_id
+            || context.payload_digest != payload_digest
+            || oan_did_oan::DidOan::parse(&context.subject_did).is_err()
+        {
+            return Err(BoundaryError::BindingMismatch);
+        }
+        Ok(Self {
+            subject_did: context.subject_did,
+            request_id: context.request_id,
+            caller_id: Some(caller_id),
+            tenant_id,
+        })
+    }
     pub fn subject_did(&self) -> &str {
         &self.subject_did
     }
@@ -80,7 +106,10 @@ pub async fn verify_inbound_authenticated<T: runtime_connector::RuntimeIpcTransp
     let (context, caller_id, tenant_id) = runtime
         .verify_authenticated_with_owner(envelope, audience, request_id, payload_digest)
         .await
-        .map_err(|_| BoundaryError::VerificationFailed)?;
+        .map_err(|error| {
+            eprintln!("authenticated runtime rejection: {error}");
+            BoundaryError::VerificationFailed
+        })?;
     if context.audience_did != audience
         || context.request_id != request_id
         || context.payload_digest != payload_digest
@@ -97,5 +126,5 @@ pub async fn verify_inbound_authenticated<T: runtime_connector::RuntimeIpcTransp
 }
 
 pub fn capabilities() -> Value {
-    json!({"stage":"ipc-contract", "networkServer":false, "runtimeConnector":false, "mutualAuthentication":false})
+    json!({"stage":"protected-ingress", "networkServer":true, "runtimeConnector":true, "mutualAuthentication":true, "callbackBinding":true, "backendIsolation":"credential-bound"})
 }

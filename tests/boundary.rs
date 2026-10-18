@@ -48,6 +48,7 @@ impl RuntimeVerifier for WrongAudience {
             payload_digest: "sha256:body".into(),
             caller_id: None,
             tenant_id: None,
+            callback_did: None,
         })
     }
 }
@@ -69,6 +70,16 @@ fn only_local_backend_is_allowed() {
     assert!(config.validate().is_ok());
     config.backend_url = "http://evil.example".into();
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn unix_runtime_requires_explicit_owner_acl_binding() {
+    let mut config: Config = serde_json::from_str(include_str!("../examples/config.json")).unwrap();
+    config.runtime_endpoint = "unix:/tmp/oan-runtime.sock".into();
+    config.runtime_owner_uid = None;
+    assert!(config.validate().is_err());
+    config.runtime_owner_uid = Some(0);
+    assert!(config.validate().is_ok());
 }
 
 #[test]
@@ -99,6 +110,7 @@ impl RuntimeVerifier for VerifiedMock {
             payload_digest: digest.into(),
             caller_id: Some("process-a".into()),
             tenant_id: Some("tenant-a".into()),
+            callback_did: None,
         })
     }
 }
@@ -243,6 +255,53 @@ async fn authenticated_ipc_rejects_invalid_bearer_and_transport_failure() {
             .await
             .unwrap_err(),
         "transport_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_ipc_callback_binds_callback_did_and_canonical_digest() {
+    let envelope = json!({"b": 2, "a": 1});
+    let callback = "did:oan:K7mQ9:11111111111111111111111111111111";
+    let callback_input_digest = oan_identity_sidecar::runtime_connector::input_digest_with_callback(
+        &envelope,
+        "did:oan:target",
+        "request",
+        "sha256:body",
+        Some(callback),
+    );
+    let response = serde_json::to_vec(&json!({
+        "version": IPC_VERSION,
+        "callerId": "process-a",
+        "tenantId": "tenant-a",
+        "context": {"subjectDid":callback,"audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a","callbackDid":callback},
+        "inputDigest": callback_input_digest
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    let context = connector
+        .verify_authenticated_callback(
+            &envelope,
+            "did:oan:target",
+            "request",
+            "sha256:body",
+            callback,
+        )
+        .await
+        .unwrap();
+    assert_eq!(context.callback_did.as_deref(), Some(callback));
+    assert_eq!(
+        input_digest(
+            &json!({"b":2,"a":1}),
+            "did:oan:target",
+            "request",
+            "sha256:body"
+        ),
+        "sha256:48c7e132aa35a2dcc24fabefc72c9a3de47db5cb14e56547a4035a5be208dce4"
     );
 }
 

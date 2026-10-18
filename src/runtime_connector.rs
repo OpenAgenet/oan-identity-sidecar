@@ -7,6 +7,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest;
+#[cfg(unix)]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 pub const IPC_VERSION: &str = "oan-runtime-ipc-v1";
 const MAX_FRAME_BYTES: usize = 256 * 1024;
@@ -21,6 +25,8 @@ pub struct IpcVerifyRequest {
     pub expected_audience: String,
     pub expected_request_id: String,
     pub expected_payload_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_did: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -30,6 +36,27 @@ pub struct IpcVerifiedContext {
     pub caller_id: String,
     pub tenant_id: Option<String>,
     pub context: VerifiedRuntimeContext,
+    pub input_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IpcSignRequest {
+    pub version: String,
+    pub operation: String,
+    pub bearer: String,
+    pub intent: Value,
+    pub expected_caller_id: String,
+    pub expected_tenant_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IpcSignedResult {
+    pub version: String,
+    pub caller_id: String,
+    pub tenant_id: Option<String>,
+    pub signed: Value,
     pub input_digest: String,
 }
 
@@ -83,6 +110,7 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
             expected_audience: expected_audience.into(),
             expected_request_id: expected_request_id.into(),
             expected_payload_digest: expected_payload_digest.into(),
+            callback_did: None,
         };
         let frame = serde_json::to_vec(&request).map_err(|_| "ipc_schema_invalid")?;
         if frame.len() > MAX_FRAME_BYTES {
@@ -92,8 +120,13 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
         if raw.len() > MAX_FRAME_BYTES {
             return Err("ipc_frame_too_large".into());
         }
-        let response: IpcVerifiedContext =
-            serde_json::from_slice(&raw).map_err(|_| "ipc_schema_invalid")?;
+        let response: IpcVerifiedContext = serde_json::from_slice(&raw).map_err(|_| {
+            let code = serde_json::from_slice::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| v.get("code").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| "ipc_schema_invalid".to_string());
+            code
+        })?;
         if response.version != IPC_VERSION
             || response.caller_id != self.caller_id
             || response.tenant_id != self.tenant_id
@@ -129,6 +162,7 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
             expected_audience: expected_audience.into(),
             expected_request_id: expected_request_id.into(),
             expected_payload_digest: expected_payload_digest.into(),
+            callback_did: None,
         };
         let frame = serde_json::to_vec(&request).map_err(|_| "ipc_schema_invalid")?;
         if frame.len() > MAX_FRAME_BYTES {
@@ -160,6 +194,78 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
         }
         Ok((response.context, response.caller_id, response.tenant_id))
     }
+    pub async fn verify_authenticated_callback(
+        &self,
+        envelope: &Value,
+        expected_audience: &str,
+        expected_request_id: &str,
+        expected_payload_digest: &str,
+        callback_did: &str,
+    ) -> Result<VerifiedRuntimeContext, String> {
+        let request = IpcVerifyRequest {
+            version: IPC_VERSION.into(),
+            operation: "verify_callback".into(),
+            bearer: self.bearer.clone(),
+            envelope: envelope.clone(),
+            expected_audience: expected_audience.into(),
+            expected_request_id: expected_request_id.into(),
+            expected_payload_digest: expected_payload_digest.into(),
+            callback_did: Some(callback_did.into()),
+        };
+        let frame = serde_json::to_vec(&request).map_err(|_| "ipc_schema_invalid")?;
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
+        let raw = self.transport.round_trip(frame).await?;
+        let response: IpcVerifiedContext =
+            serde_json::from_slice(&raw).map_err(|_| "ipc_schema_invalid")?;
+        if response.version != IPC_VERSION
+            || response.caller_id != self.caller_id
+            || response.tenant_id != self.tenant_id
+            || response.input_digest
+                != input_digest_with_callback(
+                    envelope,
+                    expected_audience,
+                    expected_request_id,
+                    expected_payload_digest,
+                    Some(callback_did),
+                )
+            || response.context.callback_did.as_deref() != Some(callback_did)
+        {
+            return Err("ipc_result_binding_mismatch".into());
+        }
+        Ok(response.context)
+    }
+
+    pub async fn sign_authenticated(&self, intent: &Value) -> Result<Value, String> {
+        let request = IpcSignRequest {
+            version: IPC_VERSION.into(),
+            operation: "sign_request".into(),
+            bearer: self.bearer.clone(),
+            intent: intent.clone(),
+            expected_caller_id: self.caller_id.clone(),
+            expected_tenant_id: self.tenant_id.clone(),
+        };
+        let frame = serde_json::to_vec(&request).map_err(|_| "ipc_schema_invalid")?;
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
+        let raw = self.transport.round_trip(frame).await?;
+        if raw.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
+        let response: IpcSignedResult =
+            serde_json::from_slice(&raw).map_err(|_| "ipc_schema_invalid")?;
+        if response.version != IPC_VERSION
+            || response.caller_id != self.caller_id
+            || response.tenant_id != self.tenant_id
+            || response.input_digest
+                != sign_input_digest(intent, &self.caller_id, self.tenant_id.as_deref())
+        {
+            return Err("ipc_result_binding_mismatch".into());
+        }
+        Ok(response.signed)
+    }
 }
 impl<T: RuntimeIpcTransport> RuntimeVerifier for AuthenticatedRuntimeConnector<T> {
     async fn verify_request(
@@ -185,8 +291,68 @@ pub fn input_digest(
     request_id: &str,
     payload_digest: &str,
 ) -> String {
-    let bytes = serde_json::to_vec(&serde_json::json!({"envelope":envelope,"audience":audience,"requestId":request_id,"payloadDigest":payload_digest})).unwrap_or_default();
-    format!("{:x}", sha2::Sha256::digest(bytes))
+    let value = serde_json::json!({"envelope":envelope,"audience":audience,"requestId":request_id,"payloadDigest":payload_digest});
+    let bytes = canonical_json(&value).into_bytes();
+    format!("sha256:{:x}", sha2::Sha256::digest(bytes))
+}
+
+pub fn input_digest_with_callback(
+    envelope: &Value,
+    audience: &str,
+    request_id: &str,
+    payload_digest: &str,
+    callback_did: Option<&str>,
+) -> String {
+    let value = if let Some(callback) = callback_did {
+        serde_json::json!({"envelope":envelope,"audience":audience,"requestId":request_id,"payloadDigest":payload_digest,"callbackDid":callback})
+    } else {
+        serde_json::json!({"envelope":envelope,"audience":audience,"requestId":request_id,"payloadDigest":payload_digest})
+    };
+    format!(
+        "sha256:{:x}",
+        sha2::Sha256::digest(canonical_json(&value).as_bytes())
+    )
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => serde_json::to_string(v).unwrap_or_else(|_| "\"\"".into()),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap_or_default(),
+                        canonical_json(v)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
+}
+
+pub fn sign_input_digest(intent: &Value, caller_id: &str, tenant_id: Option<&str>) -> String {
+    let value = serde_json::json!({"intent":intent,"callerId":caller_id,"tenantId":tenant_id});
+    format!(
+        "sha256:{:x}",
+        sha2::Sha256::digest(canonical_json(&value).as_bytes())
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -200,6 +366,69 @@ pub struct VerifiedRuntimeContext {
     pub caller_id: Option<String>,
     #[serde(default)]
     pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub callback_did: Option<String>,
+}
+
+/// Production local transport. Unix socket permissions are the process boundary;
+/// the bearer is an additional per-sidecar credential checked by Runtime.
+pub struct UnixRuntimeTransport {
+    pub path: String,
+    pub owner_uid: Option<u32>,
+}
+impl RuntimeIpcTransport for UnixRuntimeTransport {
+    #[cfg(unix)]
+    async fn round_trip(&self, frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mut acl_ready = false;
+        for _ in 0..20 {
+            let metadata = std::fs::metadata(&self.path).map_err(|_| "runtime_ipc_unavailable")?;
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 == 0 {
+                if let Some(owner) = self.owner_uid {
+                    if metadata.uid() != owner {
+                        return Err("runtime_ipc_owner_mismatch".into());
+                    }
+                }
+                acl_ready = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if !acl_ready {
+            return Err("runtime_ipc_acl_invalid".into());
+        }
+        let mut socket = UnixStream::connect(&self.path)
+            .await
+            .map_err(|_| "runtime_ipc_unavailable")?;
+        socket
+            .write_all(&frame)
+            .await
+            .map_err(|_| "runtime_ipc_write_failed")?;
+        socket
+            .write_all(b"\n")
+            .await
+            .map_err(|_| "runtime_ipc_write_failed")?;
+        let mut reader = BufReader::new(socket);
+        let mut line = Vec::new();
+        reader
+            .read_until(b'\n', &mut line)
+            .await
+            .map_err(|_| "runtime_ipc_read_failed")?;
+        if line.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+            if let Some(code) = value.get("code").and_then(Value::as_str) {
+                return Err(format!("runtime_ipc:{code}"));
+            }
+        }
+        Ok(line)
+    }
+    #[cfg(not(unix))]
+    async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        Err("runtime_ipc_unavailable_on_platform".into())
+    }
 }
 
 /// A trusted host implements this only after authenticating the Runtime channel.

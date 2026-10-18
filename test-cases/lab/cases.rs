@@ -30,6 +30,12 @@ fn sc_01_all_five_registered_dids_map_to_their_real_loopback_backend() {
             resource_did: actor["did"].as_str().unwrap().into(),
             backend_url: endpoint.into(),
             runtime_endpoint: "unix:/tmp/oan-lab-runtime.sock".into(),
+            ingress_bind: None,
+            backend_auth_token: None,
+            runtime_bearer: None,
+            caller_id: None,
+            tenant_id: None,
+            runtime_owner_uid: Some(0),
         };
         config.validate().unwrap();
         let mut bad = config.clone();
@@ -95,6 +101,7 @@ impl RuntimeVerifier for ContextDouble {
             },
             caller_id: Some("lab-process".into()),
             tenant_id: Some("lab-tenant".into()),
+            callback_did: None,
         })
     }
 }
@@ -148,8 +155,9 @@ async fn sc_04_missing_real_runtime_never_authorizes_lab_resource() {
         .await
         .is_err());
     }
-    assert_eq!(capabilities()["networkServer"], false);
-    assert_eq!(capabilities()["runtimeConnector"], false);
+    assert_eq!(capabilities()["networkServer"], true);
+    assert_eq!(capabilities()["runtimeConnector"], true);
+    assert_eq!(capabilities()["callbackBinding"], true);
 }
 #[test]
 #[ignore = "BLOCKED: real authenticated Runtime IPC and Sidecar network server required"]

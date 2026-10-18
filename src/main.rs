@@ -31,9 +31,35 @@ fn main() {
             }
         }
         Some("serve") => {
-            eprintln!("unsupported:network_server");
-            std::process::exit(2);
+            let path = args.next().ok_or_else(|| "missing_config_path".to_string());
+            let result = path
+                .and_then(|path| {
+                    std::fs::read_to_string(path).map_err(|_| "config_read_failed".to_string())
+                })
+                .and_then(|text| {
+                    serde_json::from_str::<Config>(&text)
+                        .map_err(|_| "invalid_config_json".to_string())
+                });
+            match result {
+                Ok(config) => {
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    if let Err(code) = runtime.block_on(oan_identity_sidecar::server::serve(config))
+                    {
+                        eprintln!("{code}");
+                        std::process::exit(2);
+                    }
+                }
+                Err(code) => {
+                    eprintln!("{code}");
+                    std::process::exit(2);
+                }
+            }
         }
-        _ => println!("Usage: oan-identity-sidecar capabilities | check-config <path>"),
+        _ => println!(
+            "Usage: oan-identity-sidecar capabilities | check-config <path> | serve <path>"
+        ),
     }
 }

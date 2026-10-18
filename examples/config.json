@@ -1,5 +1,6 @@
 {
   "resourceDid": "did:oan:K7mQ9:11111111111111111111111111111111",
   "backendUrl": "http://127.0.0.1:8080",
-  "runtimeEndpoint": "pipe:oan-identity-runtime"
+  "runtimeEndpoint": "pipe:oan-identity-runtime",
+  "runtimeOwnerUid": 0
 }
