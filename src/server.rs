@@ -276,6 +276,51 @@ async fn handle(
         }
     };
     let status = response.status();
+    if config.response_signing {
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = response.bytes().await.map_err(|_| "response_read_failed")?;
+        if bytes.len() > MAX_REQUEST * 4 {
+            return write_error(&mut socket, 502, "response_too_large").await;
+        }
+        let response_digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+        let response_intent = serde_json::json!({
+            "kind": "sidecar-response",
+            "requestId": request_id,
+            "requestPayloadDigest": payload_digest,
+            "payloadDigest": response_digest,
+            "audienceDid": principal.subject_did(),
+            "originalCallerDid": principal.subject_did(),
+            "targetResourceDid": config.resource_did,
+            "callbackDid": callback_did,
+            "status": status.as_u16(),
+            "operation": "response"
+        });
+        let signed_response = runtime
+            .sign_authenticated(&response_intent)
+            .await
+            .map_err(|_| "response_signing_failed")?;
+        let encoded_response = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&signed_response).map_err(|_| "response_signing_failed")?);
+        let head = format!(
+            "HTTP/1.1 {}\r\nContent-Length: {}\r\nContent-Type: {}\r\nX-OAN-Response-Envelope: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            status.as_u16(), bytes.len(), content_type, encoded_response
+        );
+        socket
+            .write_all(head.as_bytes())
+            .await
+            .map_err(|_| "response_write_failed")?;
+        socket
+            .write_all(&bytes)
+            .await
+            .map_err(|_| "response_write_failed")?;
+        return Ok(());
+    }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

@@ -24,6 +24,8 @@ pub struct Config {
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub runtime_owner_uid: Option<u32>,
+    #[serde(default)]
+    pub response_signing: bool,
 }
 impl Config {
     pub fn validate(&self) -> Result<(), BoundaryError> {

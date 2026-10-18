@@ -36,6 +36,7 @@ fn sc_01_all_five_registered_dids_map_to_their_real_loopback_backend() {
             caller_id: None,
             tenant_id: None,
             runtime_owner_uid: Some(0),
+            response_signing: false,
         };
         config.validate().unwrap();
         let mut bad = config.clone();
