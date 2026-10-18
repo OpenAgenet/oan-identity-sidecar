@@ -368,3 +368,16 @@ async fn authenticated_ipc_rejects_unknown_fields_wrong_version_and_oversized_fr
         "ipc_frame_too_large"
     );
 }
+
+#[test]
+fn response_signing_is_opt_in_and_round_trips_from_config() {
+    let config: Config = serde_json::from_str(include_str!("../examples/config.json")).unwrap();
+    assert!(!config.response_signing);
+
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../examples/config.json")).unwrap();
+    value["responseSigning"] = serde_json::Value::Bool(true);
+    let enabled: Config = serde_json::from_value(value).unwrap();
+    assert!(enabled.response_signing);
+    assert!(enabled.validate().is_ok());
+}
