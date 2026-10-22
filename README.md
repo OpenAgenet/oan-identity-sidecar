@@ -21,6 +21,8 @@ The current G5 implementation supports:
 - removing or rejecting client-supplied forged identity headers;
 - a loopback protected HTTP ingress for MCP, ordinary HTTP and A2A-compatible request bodies;
 - versioned Unix-socket Runtime IPC with bearer, caller, tenant, request digest and callback binding;
+- Windows named-pipe Runtime IPC (`pipe:\\\\.\\pipe\\<name>`) with the same verified message contract;
+- Windows pipe connection pinned to the configured Runtime process ID (`runtimeOwnerPid`), in addition to Runtime bearer and caller binding;
 - owner-only Unix-socket ACL and optional expected owner UID checks before every IPC connection;
 - Runtime-mediated outbound signing, with method/target/body/request binding and redirect disabled;
 - bounded chunked response forwarding with client-disconnect detection and backend timeout;

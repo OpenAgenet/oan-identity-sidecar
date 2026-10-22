@@ -7,10 +7,18 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 #[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ClientOptions;
 #[cfg(unix)]
 use tokio::net::UnixStream;
+use tokio::time::{timeout, Duration};
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 
 pub const IPC_VERSION: &str = "oan-runtime-ipc-v1";
 const MAX_FRAME_BYTES: usize = 256 * 1024;
@@ -130,6 +138,9 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
         if response.version != IPC_VERSION
             || response.caller_id != self.caller_id
             || response.tenant_id != self.tenant_id
+            || response.context.audience_did != expected_audience
+            || response.context.request_id != expected_request_id
+            || response.context.payload_digest != expected_payload_digest
             || response.input_digest
                 != input_digest(
                     envelope,
@@ -177,6 +188,9 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
         if response.version != IPC_VERSION
             || response.caller_id != self.caller_id
             || response.tenant_id != self.tenant_id
+            || response.context.audience_did != expected_audience
+            || response.context.request_id != expected_request_id
+            || response.context.payload_digest != expected_payload_digest
             || response.input_digest
                 != input_digest(
                     envelope,
@@ -217,11 +231,17 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
             return Err("ipc_frame_too_large".into());
         }
         let raw = self.transport.round_trip(frame).await?;
+        if raw.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
         let response: IpcVerifiedContext =
             serde_json::from_slice(&raw).map_err(|_| "ipc_schema_invalid")?;
         if response.version != IPC_VERSION
             || response.caller_id != self.caller_id
             || response.tenant_id != self.tenant_id
+            || response.context.audience_did != expected_audience
+            || response.context.request_id != expected_request_id
+            || response.context.payload_digest != expected_payload_digest
             || response.input_digest
                 != input_digest_with_callback(
                     envelope,
@@ -376,10 +396,105 @@ pub struct UnixRuntimeTransport {
     pub path: String,
     pub owner_uid: Option<u32>,
 }
+pub struct WindowsRuntimeTransport {
+    pub path: String,
+    pub owner_pid: Option<u32>,
+}
+impl RuntimeIpcTransport for WindowsRuntimeTransport {
+    #[cfg(windows)]
+    async fn round_trip(&self, frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.path.starts_with(r"\\.\pipe\")
+            || self.owner_pid.is_none()
+            || frame.len() > MAX_FRAME_BYTES
+        {
+            return Err("runtime_ipc_endpoint_invalid".into());
+        }
+        let mut pipe = ClientOptions::new()
+            .open(&self.path)
+            .map_err(|_| "runtime_ipc_unavailable")?;
+        if let Some(expected) = self.owner_pid {
+            let mut actual = 0_u32;
+            let ok = unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut actual) };
+            if ok == 0 || actual != expected {
+                return Err("runtime_ipc_owner_mismatch".into());
+            }
+        }
+        timeout(Duration::from_secs(5), async {
+            pipe.write_all(&frame)
+                .await
+                .map_err(|_| "runtime_ipc_write_failed")?;
+            pipe.write_all(b"\n")
+                .await
+                .map_err(|_| "runtime_ipc_write_failed")?;
+            let reader = BufReader::new(pipe);
+            let mut line = Vec::new();
+            reader
+                .take((MAX_FRAME_BYTES + 1) as u64)
+                .read_to_end(&mut line)
+                .await
+                .map_err(|_| "runtime_ipc_read_failed")?;
+            if line.len() > MAX_FRAME_BYTES || line.last() != Some(&b'\n') {
+                return Err("ipc_frame_too_large_or_incomplete".into());
+            }
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                if let Some(code) = value.get("code").and_then(Value::as_str) {
+                    return Err(format!("runtime_ipc:{code}"));
+                }
+            }
+            Ok(line)
+        })
+        .await
+        .map_err(|_| "runtime_ipc_timeout")?
+    }
+    #[cfg(not(windows))]
+    async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        Err("runtime_ipc_unavailable_on_platform".into())
+    }
+}
+pub enum LocalRuntimeTransport {
+    Unix(UnixRuntimeTransport),
+    Windows(WindowsRuntimeTransport),
+}
+impl RuntimeIpcTransport for LocalRuntimeTransport {
+    async fn round_trip(&self, frame: Vec<u8>) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Unix(value) => value.round_trip(frame).await,
+            Self::Windows(value) => value.round_trip(frame).await,
+        }
+    }
+}
+pub fn local_runtime_transport(
+    endpoint: &str,
+    owner_uid: Option<u32>,
+    owner_pid: Option<u32>,
+) -> Result<LocalRuntimeTransport, String> {
+    if let Some(path) = endpoint.strip_prefix("unix:") {
+        if !cfg!(unix) || owner_uid.is_none() || !path.starts_with('/') {
+            return Err("runtime_ipc_endpoint_invalid".into());
+        }
+        return Ok(LocalRuntimeTransport::Unix(UnixRuntimeTransport {
+            path: path.into(),
+            owner_uid,
+        }));
+    }
+    if let Some(path) = endpoint.strip_prefix("pipe:") {
+        if !cfg!(windows) || !path.starts_with(r"\\.\pipe\") || owner_pid.is_none() {
+            return Err("runtime_ipc_endpoint_invalid".into());
+        }
+        return Ok(LocalRuntimeTransport::Windows(WindowsRuntimeTransport {
+            path: path.into(),
+            owner_pid,
+        }));
+    }
+    Err("runtime_ipc_endpoint_invalid".into())
+}
 impl RuntimeIpcTransport for UnixRuntimeTransport {
     #[cfg(unix)]
     async fn round_trip(&self, frame: Vec<u8>) -> Result<Vec<u8>, String> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err("ipc_frame_too_large".into());
+        }
         let mut acl_ready = false;
         for _ in 0..20 {
             let metadata = std::fs::metadata(&self.path).map_err(|_| "runtime_ipc_unavailable")?;
@@ -401,29 +516,34 @@ impl RuntimeIpcTransport for UnixRuntimeTransport {
         let mut socket = UnixStream::connect(&self.path)
             .await
             .map_err(|_| "runtime_ipc_unavailable")?;
-        socket
-            .write_all(&frame)
-            .await
-            .map_err(|_| "runtime_ipc_write_failed")?;
-        socket
-            .write_all(b"\n")
-            .await
-            .map_err(|_| "runtime_ipc_write_failed")?;
-        let mut reader = BufReader::new(socket);
-        let mut line = Vec::new();
-        reader
-            .read_until(b'\n', &mut line)
-            .await
-            .map_err(|_| "runtime_ipc_read_failed")?;
-        if line.len() > MAX_FRAME_BYTES {
-            return Err("ipc_frame_too_large".into());
-        }
-        if let Ok(value) = serde_json::from_slice::<Value>(&line) {
-            if let Some(code) = value.get("code").and_then(Value::as_str) {
-                return Err(format!("runtime_ipc:{code}"));
+        timeout(Duration::from_secs(5), async {
+            socket
+                .write_all(&frame)
+                .await
+                .map_err(|_| "runtime_ipc_write_failed")?;
+            socket
+                .write_all(b"\n")
+                .await
+                .map_err(|_| "runtime_ipc_write_failed")?;
+            let mut reader = BufReader::new(socket);
+            let mut line = Vec::new();
+            reader
+                .take((MAX_FRAME_BYTES + 1) as u64)
+                .read_until(b'\n', &mut line)
+                .await
+                .map_err(|_| "runtime_ipc_read_failed")?;
+            if line.len() > MAX_FRAME_BYTES || line.last() != Some(&b'\n') {
+                return Err("ipc_frame_too_large_or_incomplete".into());
             }
-        }
-        Ok(line)
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                if let Some(code) = value.get("code").and_then(Value::as_str) {
+                    return Err(format!("runtime_ipc:{code}"));
+                }
+            }
+            Ok(line)
+        })
+        .await
+        .map_err(|_| "runtime_ipc_timeout")?
     }
     #[cfg(not(unix))]
     async fn round_trip(&self, _frame: Vec<u8>) -> Result<Vec<u8>, String> {

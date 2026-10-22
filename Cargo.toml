@@ -18,6 +18,7 @@ thiserror = "2"
 url = "2"
 base64 = "0.22"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Pipes"] }
 oan-protocol = { path = "../oan-protocol-common/crates/oan-protocol" }
 
 oan-did-oan = { path = "../oan-protocol-common/crates/oan-did-oan" }

@@ -25,6 +25,8 @@ pub struct Config {
     #[serde(default)]
     pub runtime_owner_uid: Option<u32>,
     #[serde(default)]
+    pub runtime_owner_pid: Option<u32>,
+    #[serde(default)]
     pub response_signing: bool,
 }
 impl Config {
@@ -44,7 +46,8 @@ impl Config {
             return Err(BoundaryError::InvalidConfig);
         }
         if !((self.runtime_endpoint.starts_with("unix:/") && self.runtime_endpoint.len() > 6)
-            || (self.runtime_endpoint.starts_with("pipe:") && self.runtime_endpoint.len() > 5))
+            || (self.runtime_endpoint.starts_with(r"pipe:\\.\pipe\")
+                && self.runtime_endpoint.len() > r"pipe:\\.\pipe\".len()))
         {
             return Err(BoundaryError::InvalidConfig);
         }
@@ -71,6 +74,9 @@ impl Config {
             }
         }
         if self.runtime_endpoint.starts_with("unix:") && self.runtime_owner_uid.is_none() {
+            return Err(BoundaryError::InvalidConfig);
+        }
+        if self.runtime_endpoint.starts_with("pipe:") && self.runtime_owner_pid.is_none() {
             return Err(BoundaryError::InvalidConfig);
         }
         Ok(())

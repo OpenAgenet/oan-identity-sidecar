@@ -238,6 +238,36 @@ async fn authenticated_ipc_rejects_forged_caller_or_result_binding() {
 }
 
 #[tokio::test]
+async fn authenticated_ipc_rejects_context_substitution_even_with_matching_input_digest() {
+    let envelope = json!({"signed":"message"});
+    let digest = oan_identity_sidecar::runtime_connector::input_digest(
+        &envelope,
+        "did:oan:target",
+        "request",
+        "sha256:body",
+    );
+    let response = serde_json::to_vec(&json!({
+        "version": IPC_VERSION, "callerId":"process-a", "tenantId":"tenant-a",
+        "context":{"subjectDid":"did:oan:caller","audienceDid":"did:oan:other","requestId":"request","payloadDigest":"sha256:body","callerId":"process-a","tenantId":"tenant-a"},
+        "inputDigest":digest
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated(&envelope, "did:oan:target", "request", "sha256:body")
+            .await
+            .unwrap_err(),
+        "ipc_result_binding_mismatch"
+    );
+}
+
+#[tokio::test]
 async fn authenticated_ipc_rejects_invalid_bearer_and_transport_failure() {
     assert!(AuthenticatedRuntimeConnector::new(
         IpcError,

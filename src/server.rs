@@ -9,7 +9,7 @@
 use crate::{
     config::Config,
     headers::strip_untrusted_identity_headers,
-    runtime_connector::{AuthenticatedRuntimeConnector, UnixRuntimeTransport},
+    runtime_connector::{local_runtime_transport, AuthenticatedRuntimeConnector},
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -157,14 +157,11 @@ async fn handle(
     let callback_did = headers.get("x-oan-callback-did").cloned();
     let payload_digest = format!("sha256:{:x}", sha2::Sha256::digest(&body));
     let runtime = AuthenticatedRuntimeConnector::new(
-        UnixRuntimeTransport {
-            path: config
-                .runtime_endpoint
-                .strip_prefix("unix:")
-                .unwrap_or(&config.runtime_endpoint)
-                .to_string(),
-            owner_uid: config.runtime_owner_uid,
-        },
+        local_runtime_transport(
+            &config.runtime_endpoint,
+            config.runtime_owner_uid,
+            config.runtime_owner_pid,
+        )?,
         bearer,
         caller.clone(),
         config.tenant_id.clone(),
