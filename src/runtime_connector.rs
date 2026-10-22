@@ -251,6 +251,8 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
                     Some(callback_did),
                 )
             || response.context.callback_did.as_deref() != Some(callback_did)
+            || response.context.caller_id.as_deref() != Some(response.caller_id.as_str())
+            || response.context.tenant_id != response.tenant_id
         {
             return Err("ipc_result_binding_mismatch".into());
         }

@@ -123,10 +123,16 @@ async fn handle(
         }
         headers.insert(key, v.trim().to_string());
     }
-    let length = headers
-        .get("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
+    if headers.contains_key("transfer-encoding") {
+        return write_error(&mut socket, 400, "unsupported_transfer_encoding").await;
+    }
+    let length = match headers.get("content-length") {
+        Some(value) => match value.parse::<usize>() {
+            Ok(length) => length,
+            Err(_) => return write_error(&mut socket, 400, "invalid_content_length").await,
+        },
+        None => 0,
+    };
     if length > MAX_REQUEST || header_end + length > MAX_REQUEST {
         return write_error(&mut socket, 413, "request_too_large").await;
     }

@@ -3,7 +3,10 @@
 // Email: jlxufly@gmail.com
 #![cfg(windows)]
 
+use oan_identity_sidecar::runtime_connector::AuthenticatedRuntimeConnector;
 use oan_identity_sidecar::runtime_connector::{local_runtime_transport, RuntimeIpcTransport};
+use serde_json::json;
+use std::process::{Command, Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -50,4 +53,56 @@ async fn sidecar_transport_rejects_wrong_runtime_process_before_sending_frame() 
         "runtime_ipc_owner_mismatch"
     );
     drop(server);
+}
+
+#[tokio::test]
+#[ignore = "requires sibling oan-identity-runtime build and Node 22; run explicitly for cross-language IPC acceptance"]
+async fn sidecar_connects_to_actual_node_runtime_pipe_and_binds_callback() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oan-identity-runtime/test-cases/windows-ipc-host.mjs");
+    if !script.exists() {
+        panic!("Runtime cross-language fixture missing");
+    }
+    let pipe = format!(r"\\.\pipe\oan-sidecar-node-{}", std::process::id());
+    let token = "sidecar-test-bearer-with-more-than-thirty-two-characters";
+    let mut child = Command::new("node")
+        .arg(script)
+        .arg(&pipe)
+        .arg(token)
+        .arg("sidecar-test")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start Node Runtime fixture");
+    let mut ready = String::new();
+    use std::io::BufRead;
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "READY");
+    let transport =
+        local_runtime_transport(&format!("pipe:{pipe}"), None, Some(child.id())).unwrap();
+    let connector =
+        AuthenticatedRuntimeConnector::new(transport, token.into(), "sidecar-test".into(), None)
+            .unwrap();
+    let envelope = json!({"resource":"test"});
+    let context = connector
+        .verify_authenticated_callback(
+            &envelope,
+            "did:oan:audience",
+            "req-1",
+            "sha256:test",
+            "did:oan:callback",
+        )
+        .await
+        .unwrap();
+    assert_eq!(context.subject_did, "did:oan:fixture");
+    assert_eq!(context.callback_did.as_deref(), Some("did:oan:callback"));
+    let signed = connector
+        .sign_authenticated(&json!({"kind":"sidecar-response"}))
+        .await
+        .unwrap();
+    assert_eq!(signed["fixtureSigned"], true);
+    child.kill().unwrap();
+    child.wait().unwrap();
 }

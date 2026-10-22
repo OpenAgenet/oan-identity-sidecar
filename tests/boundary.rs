@@ -324,6 +324,31 @@ async fn authenticated_ipc_callback_binds_callback_did_and_canonical_digest() {
         .await
         .unwrap();
     assert_eq!(context.callback_did.as_deref(), Some(callback));
+    let forged = serde_json::to_vec(&json!({
+        "version": IPC_VERSION, "callerId": "process-a", "tenantId": "tenant-a",
+        "context": {"subjectDid":callback,"audienceDid":"did:oan:target","requestId":"request","payloadDigest":"sha256:body","callerId":"other-process","tenantId":"tenant-a","callbackDid":callback},
+        "inputDigest": callback_input_digest
+    })).unwrap();
+    let connector = AuthenticatedRuntimeConnector::new(
+        IpcEcho { response: forged },
+        "b".repeat(32),
+        "process-a".into(),
+        Some("tenant-a".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        connector
+            .verify_authenticated_callback(
+                &envelope,
+                "did:oan:target",
+                "request",
+                "sha256:body",
+                callback
+            )
+            .await
+            .unwrap_err(),
+        "ipc_result_binding_mismatch"
+    );
     assert_eq!(
         input_digest(
             &json!({"b":2,"a":1}),

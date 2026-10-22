@@ -28,6 +28,11 @@ The current G5 implementation supports:
 - bounded chunked response forwarding with client-disconnect detection and backend timeout;
 - backend credential injection so direct fixture access fails closed.
 
+For a Windows cross-language IPC check, build the sibling Runtime with
+`npm --prefix ../oan-identity-runtime run build`, then run
+`cargo test --test windows_pipe -- --include-ignored`. This starts a local
+Node Runtime test listener and checks callback and response-signing IPC.
+
 stdio proves only a local process boundary. Without a remote challenge and message signatures, the Sidecar must not report successful remote mutual identity verification.
 
 ## Boundary
