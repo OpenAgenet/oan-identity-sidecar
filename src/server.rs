@@ -280,6 +280,11 @@ async fn handle(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream")
             .to_string();
+        let mcp_session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let bytes = response.bytes().await.map_err(|_| "response_read_failed")?;
         if bytes.len() > MAX_REQUEST * 4 {
             return write_error(&mut socket, 502, "response_too_large").await;
@@ -304,8 +309,10 @@ async fn handle(
         let encoded_response = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&signed_response).map_err(|_| "response_signing_failed")?);
         let head = format!(
-            "HTTP/1.1 {}\r\nContent-Length: {}\r\nContent-Type: {}\r\nX-OAN-Response-Envelope: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-            status.as_u16(), bytes.len(), content_type, encoded_response
+            "HTTP/1.1 {}\r\nContent-Length: {}\r\nContent-Type: {}\r\n{}X-OAN-Response-Envelope: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            status.as_u16(), bytes.len(), content_type,
+            mcp_session_id.map(|v| format!("Mcp-Session-Id: {}\r\n", v)).unwrap_or_default(),
+            encoded_response
         );
         socket
             .write_all(head.as_bytes())
