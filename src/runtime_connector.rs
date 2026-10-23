@@ -390,6 +390,8 @@ pub struct VerifiedRuntimeContext {
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub callback_did: Option<String>,
+    #[serde(default)]
+    pub response_signing_supported: bool,
 }
 
 /// Production local transport. Unix socket permissions are the process boundary;

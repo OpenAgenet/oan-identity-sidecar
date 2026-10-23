@@ -9,6 +9,27 @@ use oan_identity_sidecar::{
 use serde_json::{json, Value};
 
 #[test]
+fn runtime_context_accepts_response_signing_capability_but_rejects_unknown_fields() {
+    let mut context = json!({"subjectDid":"caller", "audienceDid":"target", "requestId":"req", "payloadDigest":"sha256:body", "responseSigningSupported":true});
+    assert!(
+        serde_json::from_value::<VerifiedRuntimeContext>(context.clone())
+            .unwrap()
+            .response_signing_supported
+    );
+    context
+        .as_object_mut()
+        .unwrap()
+        .remove("responseSigningSupported");
+    assert!(
+        !serde_json::from_value::<VerifiedRuntimeContext>(context.clone())
+            .unwrap()
+            .response_signing_supported
+    );
+    context["untrustedExtension"] = json!(true);
+    assert!(serde_json::from_value::<VerifiedRuntimeContext>(context).is_err());
+}
+
+#[test]
 fn removes_spoofed_headers_case_insensitively() {
     let headers = vec![
         ("X-OAN-DID".into(), "forged".into()),
@@ -49,6 +70,7 @@ impl RuntimeVerifier for WrongAudience {
             caller_id: None,
             tenant_id: None,
             callback_did: None,
+            response_signing_supported: true,
         })
     }
 }
@@ -111,6 +133,7 @@ impl RuntimeVerifier for VerifiedMock {
             caller_id: Some("process-a".into()),
             tenant_id: Some("tenant-a".into()),
             callback_did: None,
+            response_signing_supported: true,
         })
     }
 }

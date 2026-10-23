@@ -104,6 +104,7 @@ impl RuntimeVerifier for ContextDouble {
             caller_id: Some("lab-process".into()),
             tenant_id: Some("lab-tenant".into()),
             callback_did: None,
+            response_signing_supported: true,
         })
     }
 }
