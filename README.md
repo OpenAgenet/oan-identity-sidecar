@@ -58,7 +58,7 @@ Agent / MCP Server / HTTP Service
 
 ## Development status
 
-A buildable G5 boundary implementation is present. The lab supplies Ubuntu-only cross-process A2A/MCP adapters that exercise protected ingress, Runtime IPC, callback binding, response streaming, cancellation and direct-backend rejection. Full Linux peer-credential verification beyond socket owner/mode checks, pinned Hermes outbound execution and complete multi-hop Gateway paths remain separate acceptance work. Detailed design, development planning, and framework reviews are maintained separately in `oan-design-docs`. Source code uses English by default.
+A buildable G5 boundary implementation is present. The lab supplies Ubuntu-only cross-process A2A/MCP adapters that exercise protected ingress, Runtime IPC, callback binding, response streaming, cancellation and direct-backend rejection. Protected cross-host A2A-to-MCP composition has also been exercised by the end-to-end demos. OS peer-credential guarantees and additional host/protocol profiles must be assessed separately; a successful reference topology is not universal protocol coverage. Detailed design, development planning, and framework reviews are maintained separately in `oan-design-docs`. Source code uses English by default.
 
 ## License
 
@@ -85,3 +85,32 @@ Signed SSE responses are forwarded incrementally with an OAN terminal proof.
 Protocol clients can install Runtime `createVerifiedHttpFetch` to validate and
 remove that proof without modifying their SDK. Interrupted streams never receive
 a second HTTP response or an automatic business retry.
+
+## Independent adoption and preflight
+
+Use this component only when an external protected boundary is needed. L0
+registration/discovery and independent Skill-based mutual verification do not
+require it. Embedded Runtime adapters are an alternative; a full Runtime +
+Sidecar + Gateway deployment is not mandatory.
+
+`oan-identity-sidecar check-serving-config <path>` checks the local serving prerequisites
+(ingress, authenticated Runtime IPC, caller and backend credential), without
+opening ports, starting business processes or cleaning existing deployments.
+`check-config` remains the structural configuration check. Neither check proves
+Runtime reachability, private-backend isolation or end-to-end authentication.
+Validate those in the actual deployment before enabling a protected route.
+
+The operator owns trust pins, tenants, routing, TLS termination, service
+management and backend isolation. No scenario graph, demo run identifier, fixed
+port, SSH account, worker UID or demo launcher is required. Keep business ACLs
+and task orchestration in the application. Long-term keys remain in Runtime's
+configured Key Provider. A loopback address alone is not backend isolation:
+restrict backend access and require its independently managed credential.
+
+The tested cross-host reference demonstrates a supported composition, rather
+than requiring every deployment to reproduce that topology. Native protocol
+versions and synchronous/stream/cancel/callback profiles require explicit
+support and verification; HTTP forwarding alone does not promise every native
+operation is protected. The bounded Runtime fetch client releases SSE data only
+after terminal proof verification, even when the proxy forwards provisional
+chunks incrementally.

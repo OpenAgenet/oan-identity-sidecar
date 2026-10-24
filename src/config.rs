@@ -30,6 +30,22 @@ pub struct Config {
     pub response_signing: bool,
 }
 impl Config {
+    /// Serving preflight checks local configuration only, never starts or
+    /// cleans business processes. OS isolation remains deployment-owned.
+    pub fn validate_serving(&self) -> Result<(), BoundaryError> {
+        self.validate()?;
+        if self.ingress_bind.is_none()
+            || self.runtime_bearer.is_none()
+            || self.backend_auth_token.is_none()
+            || self
+                .caller_id
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(BoundaryError::InvalidConfig);
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), BoundaryError> {
         if oan_did_oan::DidOan::parse(&self.resource_did).is_err()
             || self.runtime_endpoint.is_empty()

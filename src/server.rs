@@ -27,7 +27,7 @@ const BACKEND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REQUEST: usize = 256 * 1024;
 
 pub async fn serve(config: Config) -> Result<(), String> {
-    config.validate().map_err(|e| e.to_string())?;
+    config.validate_serving().map_err(|e| e.to_string())?;
     let bind = config.ingress_bind.clone().ok_or("ingress_bind_required")?;
     let bearer = config
         .runtime_bearer
@@ -38,10 +38,7 @@ pub async fn serve(config: Config) -> Result<(), String> {
         .backend_auth_token
         .clone()
         .ok_or("backend_auth_token_required")?;
-    let bind_addr = bind
-        .parse::<std::net::SocketAddr>()
-        .map_err(|_| "invalid_ingress_bind")?;
-    let listener = TcpListener::bind(bind_addr)
+    let listener = TcpListener::bind(&bind)
         .await
         .map_err(|_| "ingress_bind_failed")?;
     let shared = Arc::new(config);

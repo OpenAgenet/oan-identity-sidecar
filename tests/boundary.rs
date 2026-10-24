@@ -459,3 +459,21 @@ fn response_signing_is_opt_in_and_round_trips_from_config() {
     assert!(enabled.response_signing);
     assert!(enabled.validate().is_ok());
 }
+
+#[test]
+fn serving_preflight_requires_host_configuration_without_demo_metadata() {
+    let mut config: Config = serde_json::from_str(include_str!("../examples/config.json")).unwrap();
+    config.ingress_bind = Some("127.0.0.1:47891".into());
+    config.runtime_bearer = Some("a".repeat(32));
+    config.backend_auth_token = Some("b".repeat(32));
+    config.caller_id = Some("independent-host".into());
+    assert!(config.validate_serving().is_ok());
+    config.runtime_bearer = None;
+    assert!(config.validate_serving().is_err());
+    config.runtime_bearer = Some("a".repeat(32));
+    config.backend_auth_token = None;
+    assert!(config.validate_serving().is_err());
+    config.backend_auth_token = Some("b".repeat(32));
+    config.caller_id = Some(" ".into());
+    assert!(config.validate_serving().is_err());
+}
