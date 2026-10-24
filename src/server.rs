@@ -284,16 +284,53 @@ async fn handle(
     // must therefore be allowed to finish first; the read half is used for
     // disconnect detection while streaming the response below.
     let (mut client_reader, mut client_writer) = socket.split();
-    let response = match req.send().await {
-        Ok(response) => response,
-        Err(error) => {
-            eprintln!("backend request failed: {error}");
+    // A protocol worker may still be binding its loopback listener when the
+    // first request arrives. Retry only transport connection failures within
+    // a short bounded window; never retry an HTTP response or business error.
+    let mut response = None;
+    let mut last_error = None;
+    for attempt in 0..100 {
+        match req
+            .try_clone()
+            .ok_or("backend_request_clone_failed")?
+            .send()
+            .await
+        {
+            Ok(value) => {
+                response = Some(value);
+                break;
+            }
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 99 {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+    let response = match response {
+        Some(value) => value,
+        None => {
+            eprintln!(
+                "backend request failed after bounded retries: {}",
+                last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            );
             let _ = write_error(&mut client_writer, 502, "backend_unavailable").await;
             return Ok(());
         }
     };
     let status = response.status();
-    eprintln!("backend response status={} content_type={}", status.as_u16(), response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(""));
+    eprintln!(
+        "backend response status={} content_type={}",
+        status.as_u16(),
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    );
     if config.response_signing {
         let status = response.status();
         let content_type = response
@@ -337,13 +374,14 @@ async fn handle(
             "status": status.as_u16(),
             "operation": "response"
         });
-        let signed_response = runtime
-            .sign_authenticated(&response_intent)
-            .await
-            .map_err(|error| {
-                eprintln!("sidecar response signing failed: {error}");
-                "response_signing_failed"
-            })?;
+        let signed_response =
+            runtime
+                .sign_authenticated(&response_intent)
+                .await
+                .map_err(|error| {
+                    eprintln!("sidecar response signing failed: {error}");
+                    "response_signing_failed"
+                })?;
         let encoded_response = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&signed_response).map_err(|_| "response_signing_failed")?);
         if is_stream {
