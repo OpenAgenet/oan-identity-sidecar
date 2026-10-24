@@ -276,8 +276,17 @@ impl<T: RuntimeIpcTransport> AuthenticatedRuntimeConnector<T> {
         if raw.len() > MAX_FRAME_BYTES {
             return Err("ipc_frame_too_large".into());
         }
-        let response: IpcSignedResult =
-            serde_json::from_slice(&raw).map_err(|_| "ipc_schema_invalid")?;
+        let response: IpcSignedResult = match serde_json::from_slice(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                if let Ok(error) = serde_json::from_slice::<Value>(&raw) {
+                    if let Some(code) = error.get("code").and_then(Value::as_str) {
+                        return Err(code.to_owned());
+                    }
+                }
+                return Err("ipc_schema_invalid".into());
+            }
+        };
         if response.version != IPC_VERSION
             || response.caller_id != self.caller_id
             || response.tenant_id != self.tenant_id
