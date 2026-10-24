@@ -339,7 +339,10 @@ async fn handle(
         let signed_response = runtime
             .sign_authenticated(&response_intent)
             .await
-            .map_err(|_| "response_signing_failed")?;
+            .map_err(|error| {
+                eprintln!("sidecar response signing failed: {error}");
+                "response_signing_failed"
+            })?;
         let encoded_response = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&signed_response).map_err(|_| "response_signing_failed")?);
         if is_stream {
