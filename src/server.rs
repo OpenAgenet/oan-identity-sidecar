@@ -293,6 +293,7 @@ async fn handle(
         }
     };
     let status = response.status();
+    eprintln!("backend response status={} content_type={}", status.as_u16(), response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(""));
     if config.response_signing {
         let status = response.status();
         let content_type = response
