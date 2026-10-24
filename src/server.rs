@@ -297,6 +297,18 @@ async fn handle(
             .await
         {
             Ok(value) => {
+                // A protocol worker can briefly expose a proofless 502 while
+                // its session/handler is being initialized.  Sidecar is the
+                // first component that can distinguish this transient shape
+                // from a successful backend response.  Retry only this exact
+                // status, within the same bounded startup window; every other
+                // HTTP/business response is preserved and signed immediately.
+                if value.status() == reqwest::StatusCode::BAD_GATEWAY
+                    && attempt < 99
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
                 response = Some(value);
                 break;
             }
